@@ -1,0 +1,280 @@
+<html>
+	<head>
+		<script src="jQuery.js"></script>
+		<script src="underscore.js"></script>
+		<script src="backbone.js"></script>
+		<script src="/socket.io/socket.io.js"></script>
+		<script src="farbtastic.js"></script>
+		<link rel="stylesheet" href="farbtastic.css" type="text/css" />
+		<link rel="stylesheet/less" type="text/css" href="style.less" />
+		<script src="less.js"></script>
+		<script>
+			var API = {};
+			_.extend(API, Backbone.Events);
+
+			$(document).on("ready", function(){
+				String.prototype.fixLinks = function() {
+					var urlPattern = /\b(?:https?|ftp):\/\/[a-z0-9-+&@#\/%?=~_|!:,.;]*[a-z0-9-+&@#\/%=~_|]/gim;
+					var pseudoUrlPattern = /(^|[^\/])(www\.[\S]+(\b|$))/gim;
+
+					return this
+						.replace(urlPattern, '<a href="$&" target="_blank">$&</a>')
+						.replace(pseudoUrlPattern, '$1<a href="http://$2" target="_blank">$2</a>');
+				};
+
+				var characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+				chat = {
+					generateName: function(){
+						var firstNames = ["Bob", "Spom", "Edd", "Kef", "Unk", "Elk", "Bidd", "Badd", "Zek", "Lun", "Bun", "Jang", "Sor", "Ib"],
+						bindingWovels = ["u", "i", "e", "o", "a", "y", "ea", "ue", "eo", "ae", "ya", "ey", "io"],
+						lastNames = ["ngton", "ng", "kon", "mon", "llet", "ukt", "zik", "zuk", "bak", "gak", "pug"];
+
+						return firstNames[Math.floor(Math.random() * firstNames.length)] + bindingWovels[Math.floor(Math.random() * bindingWovels.length)] + lastNames[Math.floor(Math.random() * lastNames.length)];
+					},
+
+					randomString: function(length){
+						if(typeof length === "undefined" || length.length < 1) return "Error";
+						var a = "";
+						for(var b = 0; b < length; b++){
+							a += characters.charAt(Math.floor(Math.random() * characters.length));
+						}
+
+						return a;
+					},
+
+					sendChat: function(MSG){
+						if(MSG === "") return;
+						if(MSG.indexOf("/") === 0){
+							commands = MSG.substring(1).split(/ (.+)?/);
+							switch(commands[0].toLowerCase()){
+								case "nick":
+								case "me":
+									commands[1] = commands[1].replace(/[^a-zA-Z0-9]/g, "").substring(0, 20)
+									if(commands[1].length < 4 || commands[1].toLowerCase().indexOf("system") > -1) return "invalidName";
+									socket.emit("nameChange", {from: user.name, to: commands[1] });
+									return user.name = commands[1];
+								break;
+
+								case "name":
+								case "newname":
+									var name = chat.generateName();
+									socket.emit("nameChange", {from: user.name, to: name });
+									return user.name = name;
+								break;
+
+								case "updates":
+									user.chatUpdates = !user.chatUpdates;
+									user.chatUpdates ? $("#chatUpdatesStyle").html(".chatUpdate{ display: block !important; }") : $("#chatUpdatesStyle").html(".chatUpdate{ display: none !important; }");
+									chat.settingsMessage("Chat updates turned " + user.chatUpdates ? "on" : "off" + ".");
+								break;
+
+								case "color":
+								case "colour":
+									if(commands[1].length === 6 || commands[1].length === 7){
+										user.color = commands[1].replace(/#/g, "");
+										return chat.settingsMessage("Chat color changed.");
+									}else{
+										return chat.settingsMessage("Invalid color!");
+									}
+								break;
+
+								case "settings":
+								case "set":
+									$("#chatMessages").css("display", "none");
+									$("#chatInput").css("display", "none");
+									$("#settings").css("display", "block");
+								break;
+
+								default: 
+									chat.systemMessage("Invalid command!");
+								break;
+							}
+
+							return "command";
+						}
+
+						user.canSend = false;
+						setTimeout(function(){ user.canSend = true; }, 500);
+
+						socket.emit("sendChat", { MSG: MSG.substring(0, 256), from: user });
+					},
+
+					logChat: function(){
+						var message = $("<div />", { id: "chatMSG-" + arguments[0].chatID, class: "chatMSG", html: "<span class='from' style='color:" + arguments[0].from.color + "'>" + _.escape(arguments[0].from.name) + "</span><span class='MSGSplitter'> > </span><span class='text'>" + _.escape(arguments[0].MSG).fixLinks() + "</span>" }).appendTo("#chatMessages");
+						
+						$("#chatMessages").animate({
+							scrollTop: $("#chatMessages")[0].scrollHeight
+						}, 400);
+
+						API.trigger("CHAT", arguments[0]);
+						return message;
+					},
+
+					systemMessage: function(){
+						if(arguments[0].indexOf(user.name) > -1) return;
+						var message = $("<div />", { id: "systemMessage", class: "chatUpdate", html: "<span class='from'>System</span><span class='MSGSplitter'> > </span><span class='text'>" + _.escape(arguments[0]) + "</span>" }).appendTo("#chatMessages");
+
+						$("#chatMessages").animate({
+							scrollTop: $("#chatMessages")[0].scrollHeight
+						}, 400);
+						API.trigger("SYSTEM_MESSAGE", arguments[0]);
+						return message;
+					},
+
+					settingsMessage: function(){
+						var message = $("<div />", { id: "settingsMessage", class: "chatUpdate", html: "<span class='from'>System</span><span class='MSGSplitter'> > </span><span class='text'>" + _.escape(arguments[0]) + "</span>" }).appendTo("#chatMessages");
+
+						$("#chatMessages").animate({
+							scrollTop: $("#chatMessages")[0].scrollHeight
+						}, 400);
+
+						API.trigger("SETTINGS_MESSAGE", arguments[0]);
+						return message;
+					}
+				},
+
+				user = {
+					name: chat.generateName(),
+					id: chat.randomString(10),
+					canSend: false,
+					chatUpdates: true,
+					color: "333333"
+				},
+
+				socket = io.connect("85.218.167.236:1337");
+
+				socket.on("connect", function(){
+					console.log("%cConnected to socket.", "font-size: 18px;");
+					socket.emit("userJoin", user);
+					user.canSend = true;
+
+				}).on("nameChange", function(data){
+					if(!user.chatUpdates) return "noUpdates";
+					var message = $("<div />", { id: "nameChangeMessage", class: "chatUpdate", html: "<span class='from'>System</span><span class='MSGSplitter'> > </span><span class='text'>" + data.from + " just changed his name to: " + data.to + "</span>" }).appendTo("#chatMessages");
+					document.getElementById("chatMessages").scrollTop = 999999;
+
+					API.trigger("NAME_CHANGE", data);
+				}).on("recieveChat", function(data){
+					chat.logChat(data);
+				}).on("systemMessage", function(data){
+					chat.systemMessage(data);
+				});
+				
+				$("#chatInputForm").on("keydown", function(){
+					switch(arguments[0].keyCode){
+						case 13: // Enter key
+							if(user.canSend){
+								chat.sendChat($(this).val());
+								$(this).val("");
+							}
+						break;
+					}
+				});
+
+				$(window).on("resize", function(){
+					$("#chatMessages").css({
+						height: $("#chat").height() - $("#chatHeader").outerHeight() - $("#chatInput").outerHeight() - 16 + "px"
+					});
+
+					$("#settings").css({
+						height: $("#chat").height() - $("#chatHeader").outerHeight() - 2 + "px"
+					});
+				}).on("unload", function(){
+					socket.emit("userLeave", user);
+				});
+
+				$("#chatMessages").css({
+					height: $("#chat").height() - $("#chatHeader").outerHeight() - $("#chatInput").outerHeight() - 44 + "px"
+				});
+
+				$("#settings").css({
+					height: $("#chat").height() - $("#chatHeader").outerHeight() - 30 + "px"
+				});
+
+				$("#userColor").val("#" + user.color).on("keydown", function(){
+					user.color = $(this).val();
+
+				}).on("focus", function(){
+					$(".colorPicker").css("display", "none");
+					$("#userColorPicker").fadeIn(200);
+
+				}).on("blur", function(){
+					$("#userColorPicker").fadeOut(200);
+					user.color = $(this).val();
+
+				});
+
+				$("#siteColor").val("#F15010").on("keydown", function(){
+					less.modifyVars({
+						"@color": $(this).val()
+					});
+
+				}).on("focus", function(){
+					$(".colorPicker").css("display", "none");
+					$("#siteColorPicker").fadeIn(200);
+
+				}).on("blur", function(){
+					$("#siteColorPicker").fadeOut(200);
+				})
+
+				$("#chatUpdatesButton").html("Chat Updates: " + user.chatUpdates).on("click", function(){
+					user.chatUpdates = !user.chatUpdates;
+					$(this).html("Chat Updates: " + user.chatUpdates);
+				});
+
+				$("#chatButton").on("click", function(){
+					$("#chatMessages").css("display", "block");
+					$("#chatInput").css("display", "block");
+					$("#settings").css("display", "none");
+				});
+
+				chat.systemMessage("Type /settings to see available settings, type /nick \"username\" to set your desired username.");
+
+				$("#userColorPicker").farbtastic(function(){
+					arguments[0] = arguments[0].toUpperCase();
+					$("#userColor").val(arguments[0]).css("background-color", arguments[0]);
+
+					user.color = arguments[0];
+				});
+
+				$("#siteColorPicker").farbtastic(function(){
+					arguments[0] = arguments[0].toUpperCase();
+					$("#siteColor").val(arguments[0]).css("background-color", arguments[0]);
+
+					less.modifyVars({
+						"@color": arguments[0]
+					});
+				});
+
+				$(".colorPicker").css("display", "none");
+
+			});
+		</script>
+	</head>
+	<body>
+		<div id="chat">
+			<div id="chatHeader">
+				<div>mubChat <span>0.002</span></div>
+			</div>
+			<div id="chatMessages">
+
+			</div>
+			<div id="settings" style="display: none;">
+				<div id="userSettings">
+					<span>User color: <input type="text" id="userColor" maxLength="7" /></span><br />
+					<div id="userColorPicker" class="colorPicker"></div>
+
+					<span>Site color: <input type="text" id="siteColor" maxLength="7" /></span><br />
+					<div id="siteColorPicker" class="colorPicker"></div>
+
+					<br /><br />
+					<div class="divButton" id="chatUpdatesButton">Chat Updates: </div><br />
+					<div class="divButton" id="chatButton">Back To Chat</div>
+				</div>
+			</div>
+			<div id="chatInput">
+				<input type="text" maxlength="512" value placeholder="Join the chat!" id="chatInputForm" />
+			</div>
+		</div>
+	</body>
+</html>
